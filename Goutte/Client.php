@@ -14,6 +14,7 @@ namespace Goutte;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\ClientInterface as GuzzleClientInterface;
 use GuzzleHttp\Cookie\CookieJar;
+use GuzzleHttp\Cookie\SetCookie;
 use GuzzleHttp\Exception\RequestException;
 use Psr\Http\Message\ResponseInterface;
 use Symfony\Component\BrowserKit\Client as BaseClient;
@@ -33,6 +34,7 @@ class Client extends BaseClient
 
     private $headers = array();
     private $auth = null;
+    private $guzzleCookieJar = null;
 
     public function setClient(GuzzleClientInterface $client)
     {
@@ -93,6 +95,19 @@ class Client extends BaseClient
         return $this;
     }
 
+    public function getGuzzleCookieJar()
+    {
+        if (empty($this->guzzleCookieJar)) {
+            $this->guzzleCookieJar = new CookieJar();
+        }
+        return $this->guzzleCookieJar;
+    }
+
+    public function setGuzzleCookieJar(CookieJar $guzzleCookieJar)
+    {
+        $this->guzzleCookieJar = $guzzleCookieJar;
+    }
+
     /**
      * @param Request $request
      *
@@ -113,13 +128,37 @@ class Client extends BaseClient
             }
         }
 
-        $cookies = CookieJar::fromArray(
-            $this->getCookieJar()->allRawValues($request->getUri()),
-            parse_url($request->getUri(), PHP_URL_HOST)
-        );
+        $parts = array_replace(array('path' => '/'), parse_url($request->getUri()));
+        $cookies = $this->getCookieJar()->all();
+
+        foreach ($cookies as $cookie) {
+            $domain = $cookie->getDomain();
+            if ($domain) {
+                $domain = '.'.ltrim($domain, '.');
+                if ($domain != substr('.'.$parts['host'], -strlen($domain))) {
+                    continue;
+                }
+            }
+
+            $path = $cookie->getPath();
+            if ($path != substr($parts['path'], 0, strlen($path))) {
+                continue;
+            }
+
+            if ($cookie->isSecure() && 'https' != $parts['scheme']) {
+                continue;
+            }
+
+            $setCookie = SetCookie::fromString((string) $cookie);
+            if (empty($setCookie->getDomain())) {
+                $setCookie->setDomain($parts['host']);
+            }
+
+            $this->getGuzzleCookieJar()->setCookie($setCookie);
+        }
 
         $requestOptions = array(
-            'cookies' => $cookies,
+            'cookies' => $this->getGuzzleCookieJar(),
             'allow_redirects' => false,
             'auth' => $this->auth,
         );
